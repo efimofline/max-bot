@@ -1,0 +1,20 @@
+# Секретные ключи — никогда не заливать в git
+token.txt
+groq_key.txt
+goapi_key.txt
+musicapi_key.txt
+openai_key.txt
+gigachat_key.txt
+hf_key.txt
+
+# Тестовые выходные файлы
+test_output.mp3
+test_output.jpg
+test_goapi_output.mp3
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
