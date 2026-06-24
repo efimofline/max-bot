@@ -17,6 +17,8 @@ from pathlib import Path
 import aiohttp
 from openai import AsyncOpenAI
 from maxapi import Bot, Dispatcher, F
+from maxapi.connection.base import BaseConnection
+BaseConnection.API_URL = "https://platform-api2.max.ru"
 from maxapi.filters.command import Command
 from maxapi.types import CallbackButton, InputMediaBuffer, LinkButton, MessageCallback, MessageCreated
 from maxapi.types.attachments.upload import UploadType
