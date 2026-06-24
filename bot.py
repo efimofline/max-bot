@@ -15,8 +15,10 @@ import urllib.parse
 from pathlib import Path
 
 import aiohttp
+import ssl
 from openai import AsyncOpenAI
 from maxapi import Bot, Dispatcher, F
+from maxapi.client.default import DefaultConnectionProperties
 from maxapi.connection.base import BaseConnection
 BaseConnection.API_URL = "https://platform-api2.max.ru"
 from maxapi.filters.command import Command
@@ -202,9 +204,14 @@ async def ask_gpt(chat_id: int, user_text: str) -> str:
 
 bot = Bot(
     TOKEN,
-    after_input_media_delay=8.0,    # ждём 8с после загрузки файла
-    after_upload_attempts=30,        # до 30 попыток отправки
-    after_upload_retry_delay=5.0,    # 5с между попытками (итого до 2.5 мин)
+    after_input_media_delay=8.0,
+    after_upload_attempts=30,
+    after_upload_retry_delay=5.0,
+    # platform-api2.max.ru использует сертификат Минцифры, которого нет
+    # в стандартном хранилище Python — отключаем проверку для этого хоста
+    default_connection=DefaultConnectionProperties(
+        connector=aiohttp.TCPConnector(ssl=False)
+    ),
 )
 dp = Dispatcher()
 
