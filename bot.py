@@ -202,17 +202,6 @@ async def ask_gpt(chat_id: int, user_text: str) -> str:
 
 # ── Бот ───────────────────────────────────────────────────────────────────────
 
-bot = Bot(
-    TOKEN,
-    after_input_media_delay=8.0,
-    after_upload_attempts=30,
-    after_upload_retry_delay=5.0,
-    # platform-api2.max.ru использует сертификат Минцифры, которого нет
-    # в стандартном хранилище Python — отключаем проверку для этого хоста
-    default_connection=DefaultConnectionProperties(
-        connector=aiohttp.TCPConnector(ssl=False)
-    ),
-)
 dp = Dispatcher()
 
 
@@ -446,6 +435,15 @@ async def chat_with_ai(event: MessageCreated):
 
 
 async def main():
+    # TCPConnector требует работающий event loop — создаём здесь, а не на уровне модуля
+    connector = aiohttp.TCPConnector(ssl=False)
+    bot = Bot(
+        TOKEN,
+        after_input_media_delay=8.0,
+        after_upload_attempts=30,
+        after_upload_retry_delay=5.0,
+        default_connection=DefaultConnectionProperties(connector=connector),
+    )
     print(f"Бот запущен. Модель: {DEFAULT_MODEL}")
     await dp.start_polling(bot)
 
