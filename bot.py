@@ -1,9 +1,9 @@
 """
-Бот для мессенджера MAX с ИИ-ассистентом на Lovable AI Gateway.
+Бот для мессенджера MAX с ИИ-ассистентом на Groq.
 
 Запуск:
     1. Получи токен у @MasterBot в MAX → сохрани в token.txt
-    2. Получи LOVABLE_API_KEY на lovable.dev → сохрани в lovable_key.txt
+    2. Получи GROQ_API_KEY на console.groq.com → сохрани в groq_key.txt
     3. pip install -r requirements.txt
     4. python bot.py
 """
@@ -15,7 +15,6 @@ import urllib.parse
 from pathlib import Path
 
 import aiohttp
-import ssl
 from openai import AsyncOpenAI
 from maxapi import Bot, Dispatcher, F
 from maxapi.client.default import DefaultConnectionProperties
@@ -33,10 +32,13 @@ DEFAULT_MODEL = "llama-3.3-70b-versatile"
 MODELS = {
     "llama-3.3-70b-versatile": "🦙 Llama 3.3 70B — универсальная",
     "llama-3.1-8b-instant":    "⚡ Llama 3.1 8B — быстрая",
-    "mixtral-8x7b-32768":      "🌀 Mixtral 8x7B — длинный контекст",
     "openai/gpt-oss-20b":      "🚀 GPT OSS 20B — сверхбыстрая",
 }
 SYSTEM_PROMPT = "Ты — дружелюбный ассистент. Отвечай кратко и по делу на русском языке."
+
+MUSIC_POLL_ATTEMPTS = 18
+MUSIC_POLL_INTERVAL_SEC = 10
+MUSIC_WAIT_LABEL = "до 3 минут"
 
 
 def _read_file(name: str) -> str:
@@ -95,7 +97,7 @@ def add_to_history(chat_id: int, role: str, content: str) -> None:
         _history[chat_id] = history[-MAX_HISTORY:]
 
 
-# ── Lovable AI Gateway ────────────────────────────────────────────────────────
+# ── Генерация медиа ───────────────────────────────────────────────────────────
 
 async def generate_image(prompt: str) -> bytes:
     """Генерирует картинку через Pollinations AI (бесплатно, без ключа)."""
@@ -132,9 +134,12 @@ async def generate_music(
             "task_type": "generate_music",
             "input": {
                 "lyrics_type": "user",
-                "prompt": lyrics,
-                "tags": style or "pop",
+                "lyrics": lyrics,
+                "gpt_description_prompt": style or "pop",
+                "negative_tags": "",
+                "seed": -1,
             },
+            "config": {"service_mode": "public"},
         }
     else:
         body = {
@@ -142,8 +147,11 @@ async def generate_music(
             "task_type": "generate_music",
             "input": {
                 "lyrics_type": "generate",
-                "prompt": prompt,
+                "gpt_description_prompt": prompt,
+                "negative_tags": "",
+                "seed": -1,
             },
+            "config": {"service_mode": "public"},
         }
 
     async with aiohttp.ClientSession(headers=headers) as session:
@@ -152,35 +160,46 @@ async def generate_music(
             f"{GOAPI_BASE}/task", json=body,
             timeout=aiohttp.ClientTimeout(total=30),
         ) as resp:
+            if resp.status != 200:
+                err_text = await resp.text()
+                raise RuntimeError(f"Ошибка API ({resp.status}): {err_text[:200]}")
             data = await resp.json()
             task_id = data.get("data", {}).get("task_id")
             if not task_id:
-                err = str(data.get("message", "")).lower()
+                err = str(data.get("message", "") or data.get("data", {}).get("error", {})).lower()
                 if "credit" in err or "balance" in err or "quota" in err or "point" in err:
                     raise RuntimeError("NO_CREDITS")
                 raise RuntimeError(f"Не удалось создать задачу: {data}")
 
-        # Ждём готовности (до 3 минут)
-        for _ in range(20):
-            await asyncio.sleep(10)
+        for _ in range(MUSIC_POLL_ATTEMPTS):
+            await asyncio.sleep(MUSIC_POLL_INTERVAL_SEC)
             async with session.get(
                 f"{GOAPI_BASE}/task/{task_id}",
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as resp:
+                if resp.status != 200:
+                    continue
                 result = await resp.json()
                 status = result.get("data", {}).get("status", "")
                 if status == "failed":
-                    raise RuntimeError("Генерация музыки провалилась")
+                    err = result.get("data", {}).get("error", {}) or {}
+                    detail = err.get("raw_message") or err.get("message") or "unknown"
+                    raise RuntimeError(f"Генерация музыки провалилась: {detail}")
                 if status == "completed":
                     songs = result.get("data", {}).get("output", {}).get("songs", [])
-                    if songs:
-                        audio_url = songs[0].get("song_path")
-                        async with session.get(
-                            audio_url, timeout=aiohttp.ClientTimeout(total=120)
-                        ) as ar:
-                            return await ar.read()
+                    if not songs:
+                        raise RuntimeError("Готовый трек не содержит аудио")
+                    audio_url = songs[0].get("song_path")
+                    if not audio_url:
+                        raise RuntimeError("Готовый трек не содержит ссылки на аудио")
+                    async with session.get(
+                        audio_url, timeout=aiohttp.ClientTimeout(total=120)
+                    ) as ar:
+                        if ar.status != 200:
+                            raise RuntimeError(f"Ошибка скачивания аудио ({ar.status})")
+                        return await ar.read()
 
-    raise RuntimeError("Таймаут: трек не сгенерирован за 3 минуты")
+    raise RuntimeError(f"Таймаут: трек не сгенерирован за {MUSIC_WAIT_LABEL}")
 
 
 async def ask_gpt(chat_id: int, user_text: str) -> str:
@@ -196,6 +215,8 @@ async def ask_gpt(chat_id: int, user_text: str) -> str:
     )
 
     answer = response.choices[0].message.content
+    if not answer:
+        return "Не удалось получить ответ, попробуй ещё раз."
     add_to_history(chat_id, "assistant", answer)
     return answer
 
@@ -245,7 +266,7 @@ def model_keyboard(current_model: str):
 @dp.message_created(Command("start"))
 async def start(event: MessageCreated):
     await event.message.answer(
-        "Привет! 👋 Я ИИ-ассистент на базе  AI.\n"
+        "Привет! 👋 Я ИИ-ассистент на базе Groq AI.\n"
         "Задай мне любой вопрос — я отвечу.\n"
         "А еще я учусь сочинять песни и писать музыку.\n"
         "История нашего диалога сохраняется 🧠\n"
@@ -264,7 +285,7 @@ async def clear_cmd(event: MessageCreated):
 @dp.message_callback()
 async def on_button(event: MessageCallback):
     payload = event.callback.payload
-    chat_id = event.chat.chat_id if event.chat else None
+    chat_id = event.message.recipient.chat_id if event.message else None
 
     if payload == "help":
         await event.message.answer(
@@ -278,12 +299,13 @@ async def on_button(event: MessageCallback):
             "• /clear — очистить историю диалога"
         )
     elif payload == "about":
+        current = _chat_model.get(chat_id, DEFAULT_MODEL) if chat_id else DEFAULT_MODEL
         await event.message.answer(
             "🤖 О боте\n\n"
             "Версия: 2.0\n\n"
             "Возможности:\n"
-            "• ИИ-ассистент на базе Groq (Llama 3.3)\n"
-            f"• Модель: {DEFAULT_MODEL}\n"
+            "• ИИ-ассистент на базе Groq\n"
+            f"• Твоя модель: {MODELS.get(current, current)}\n"
             "• Помнит историю диалога\n"
             "• /clear — сброс истории"
         )
@@ -293,7 +315,7 @@ async def on_button(event: MessageCallback):
             f"🧠 Выбери модель ИИ\nСейчас: {MODELS.get(current, current)}",
             attachments=[model_keyboard(current)],
         )
-    elif payload.startswith("model:") and chat_id:
+    elif payload and payload.startswith("model:") and chat_id:
         model_id = payload.removeprefix("model:")
         if model_id in MODELS:
             _chat_model[chat_id] = model_id
@@ -378,7 +400,7 @@ async def chat_with_ai(event: MessageCreated):
 
     if chat_id in _waiting_music:
         _waiting_music.discard(chat_id)
-        await event.message.answer("🎵 Генерирую музыку, подожди около 2 минут...")
+        await event.message.answer(f"🎵 Генерирую музыку, подожди {MUSIC_WAIT_LABEL}...")
         try:
             audio_bytes = await generate_music(prompt=text)
             print(f"[music] скачано байт: {len(audio_bytes)}")
@@ -409,7 +431,7 @@ async def chat_with_ai(event: MessageCreated):
     if chat_id in _waiting_music_style:
         _waiting_music_style.discard(chat_id)
         lyrics = _pending_lyrics.pop(chat_id, "")
-        await event.message.answer("🎵 Генерирую песню с твоим текстом, подожди около 2 минут...")
+        await event.message.answer(f"🎵 Генерирую песню с твоим текстом, подожди {MUSIC_WAIT_LABEL}...")
         try:
             audio_bytes = await generate_music(lyrics=lyrics, style=text)
             print(f"[song] скачано байт: {len(audio_bytes)}")
@@ -435,7 +457,7 @@ async def chat_with_ai(event: MessageCreated):
 
 
 async def main():
-    # TCPConnector требует работающий event loop — создаём здесь, а не на уровне модуля
+    # На части Windows-систем нет доверенного CA для platform-api2.max.ru
     connector = aiohttp.TCPConnector(ssl=False)
     bot = Bot(
         TOKEN,

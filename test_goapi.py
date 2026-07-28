@@ -18,8 +18,11 @@ async def main():
             "task_type": "generate_music",
             "input": {
                 "lyrics_type": "generate",
-                "prompt": "relaxing lofi hip hop beat",
+                "gpt_description_prompt": "relaxing lofi hip hop beat",
+                "negative_tags": "",
+                "seed": -1,
             },
+            "config": {"service_mode": "public"},
         }
         async with session.post(
             f"{BASE}/task", json=body,
